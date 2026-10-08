@@ -44,8 +44,20 @@ export function createSpeech(env) {
     return Buffer.from(await r.arrayBuffer());
   }
 
+  // Streams MP3 chunks as ElevenLabs produces them, so playback can start before the whole reply is synthesized.
+  async function* streamSynthesize(text) {
+    if (!key || !voiceId || !text) return;
+    const r = await fetch(`${EL_BASE}/text-to-speech/${encodeURIComponent(voiceId)}/stream?output_format=${ttsFormat}`, {
+      method: "POST",
+      headers: { "xi-api-key": key, "content-type": "application/json", accept: "audio/mpeg" },
+      body: JSON.stringify({ text, model_id: ttsModel }),
+    });
+    if (!r.ok) throw new Error(`TTS stream ${r.status}: ${(await r.text()).slice(0, 200)}`);
+    for await (const chunk of r.body) yield Buffer.from(chunk);
+  }
+
   return {
-    transcribe, synthesize,
+    transcribe, synthesize, streamSynthesize,
     sttOn: !!key,
     ttsOn: !!(key && voiceId),
     describe: () => key

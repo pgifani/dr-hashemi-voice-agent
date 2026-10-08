@@ -78,10 +78,48 @@ async function speak(text) {
   catch (e) { console.error("tts failed:", e.message); return null; }
 }
 
-let greetingAudio = null;   // the greeting never changes, so synthesize it once
-async function greeting() {
-  if (greetingAudio === null && speech.ttsOn) greetingAudio = await speak(GREETING);
-  return greetingAudio;
+// Fixed phrases (greeting, "didn't catch that", error) never change, so each is synthesized once and reused.
+const phraseCache = new Map();
+async function cachedSpeak(text) {
+  if (!speech.ttsOn) return null;
+  if (!phraseCache.has(text)) { const a = await speak(text); if (a) phraseCache.set(text, a); return a; }
+  return phraseCache.get(text);
+}
+const greeting = () => cachedSpeak(GREETING);
+const NOT_HEARD = "ببخشید، صداتون رو واضح نشنیدم. میشه دوباره بفرمایید؟";
+const TECH_ERROR = "ببخشید، یه مشکل فنی پیش اومد. لطفاً دوباره بفرمایید، یا با شماره‌ی مطب تماس بگیرید.";
+
+/* ---------- streamed replies: synthesis starts the moment the reply text exists; the page plays
+   /api/tts/<id> while chunks are still arriving, instead of waiting for the whole MP3 ---------- */
+const ttsJobs = new Map();
+setInterval(() => { const old = Date.now() - 3 * 60000; for (const [id, j] of ttsJobs) if (j.created < old) ttsJobs.delete(id); }, 60000).unref();
+function startTts(text) {
+  if (!speech.ttsOn || !text) return null;
+  const id = randomUUID();
+  const job = { chunks: [], done: false, failed: false, waiters: new Set(), created: Date.now() };
+  ttsJobs.set(id, job);
+  const wake = () => { for (const w of [...job.waiters]) w(); };
+  (async () => {
+    try { for await (const c of speech.streamSynthesize(speakable(text))) { job.chunks.push(c); wake(); } }
+    catch (e) { job.failed = true; console.error("tts stream failed:", e.message); }
+    job.done = true; wake();
+  })();
+  return `/api/tts/${id}`;
+}
+async function handleTtsStream(req, res, id) {
+  const job = ttsJobs.get(id);
+  if (!job) { res.writeHead(404); return res.end(); }
+  const next = () => new Promise((r) => { const w = () => { job.waiters.delete(w); r(); }; job.waiters.add(w); });
+  while (!job.chunks.length && !job.done) await next();   // hold the headers until audio actually exists
+  if (!job.chunks.length) { res.writeHead(502); return res.end(); }
+  res.writeHead(200, { "content-type": "audio/mpeg", "cache-control": "no-store" });
+  let i = 0;
+  for (;;) {
+    while (i < job.chunks.length) res.write(job.chunks[i++]);
+    if (job.done || res.destroyed) break;
+    await next();
+  }
+  res.end();
 }
 
 // Optional private-link gate for testing: with ACCESS_CODE set, calls only start from <url>/?k=<code>.
@@ -118,23 +156,18 @@ async function handleTurn(req, res) {
       else transcript = await speech.transcribe(body, type);
     }
     t.push(Date.now());
-    if (!transcript) {
-      const reply = "ببخشید، صداتون رو واضح نشنیدم. میشه دوباره بفرمایید؟";
-      return json(res, 200, { ok: true, transcript: "", reply, audio: await speak(reply) });
-    }
+    if (!transcript) return json(res, 200, { ok: true, transcript: "", reply: NOT_HEARD, audio: await cachedSpeak(NOT_HEARD) });
     const reply = await agent.respond(s, transcript);
     t.push(Date.now());
-    const audio = await speak(reply);
-    t.push(Date.now());
-    const timing = { hear: (t[1] - t[0]) / 1000, think: (t[2] - t[1]) / 1000, speak: (t[3] - t[2]) / 1000 };
+    const audioUrl = startTts(reply);   // synthesis runs in the background; the page streams it from this URL
+    const timing = { hear: (t[1] - t[0]) / 1000, think: (t[2] - t[1]) / 1000 };
     // Asking for a national ID / mobile (not reading one back)? Callers pause between digit groups, so the page
     // waits for a longer silence before ending their turn.
     const slow = /کد ملی|شماره|موبایل/.test(reply) && !/درسته|صحیحه/.test(reply);
-    json(res, 200, { ok: true, transcript, reply, audio, end: s.ended, booked: s.booked, timing, slow });
+    json(res, 200, { ok: true, transcript, reply, audioUrl, end: s.ended, booked: s.booked, timing, slow });
   } catch (e) {
     console.error("turn failed:", e.message);
-    const reply = "ببخشید، یه مشکل فنی پیش اومد. لطفاً دوباره بفرمایید، یا با شماره‌ی مطب تماس بگیرید.";
-    json(res, 200, { ok: true, transcript: "", reply, audio: await speak(reply), error: true });
+    json(res, 200, { ok: true, transcript: "", reply: TECH_ERROR, audio: await cachedSpeak(TECH_ERROR), error: true });
   } finally { s.busy = false; }
 }
 
@@ -148,6 +181,7 @@ createServer(async (req, res) => {
       if (s) sessions.delete(s.id);
       return json(res, 200, { ok: true });
     }
+    if (req.method === "GET" && path.startsWith("/api/tts/")) return await handleTtsStream(req, res, path.slice(9));
     if (req.method === "GET" && path === "/healthz") return json(res, 200, { ok: true });
     if (req.method === "GET" && (path === "/" || path === "/index.html")) {
       res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store",

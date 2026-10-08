@@ -191,13 +191,14 @@
   }
 
   // Play the agent's reply; resolves when it has finished speaking.
-  function say(text, audio) {
+  // audio: a whole MP3 (base64) for fixed phrases; audioUrl: a reply streamed while it's still being synthesized.
+  function say(text, audio, audioUrl) {
     addMsg('agent', text);
     setState('speaking', 'دستیار صحبت می‌کند…');
     return new Promise((resolve) => {
-      if (!audio) return setTimeout(resolve, Math.min(6000, 600 + text.length * 45));
+      if (!audio && !audioUrl) return setTimeout(resolve, Math.min(6000, 600 + text.length * 45));
       player.onended = player.onerror = () => resolve();
-      player.src = 'data:audio/mpeg;base64,' + audio;
+      player.src = audioUrl || ('data:audio/mpeg;base64,' + audio);
       player.play().catch(() => resolve());
     });
   }
@@ -208,7 +209,7 @@
     listen();
   }
 
-  // Simple voice-activity detection: record until ~1 s of silence follows speech.
+  // Simple voice-activity detection: record until ~0.8 s of silence follows speech (2 s while giving a number).
   function listen() {
     setState('listening', 'گوش می‌دهم…', 'صحبت کنید؛ وقتی ساکت شوید، دستیار جواب می‌دهد.');
     const chunks = [];
@@ -232,7 +233,7 @@
       elapsed += 50;
       if (rms > thr) { voiced += 50; silent = 0; if (voiced >= 150) spoken = true; }
       else { voiced = 0; if (spoken) silent += 50; else floor = floor * 0.95 + rms * 0.05; }
-      const done = spoken && (silent >= (slow ? 2000 : 1000) || elapsed >= 25000);
+      const done = spoken && (silent >= (slow ? 2000 : 800) || elapsed >= 25000);
       const idleTooLong = !spoken && elapsed >= 15000;   // restart so the clip stays small
       if (done || idleTooLong) { clearInterval(timer); recorder.stop(); }
     }, 50);
@@ -260,7 +261,7 @@
       return next();
     }
     if (r.transcript && !isText) addMsg('caller', r.transcript);
-    await say(r.reply, r.audio);
+    await say(r.reply, r.audio, r.audioUrl);
     if (r.end) return hangup('تماس به پایان رسید. روز خوبی داشته باشید.');
     slow = !!r.slow;
     next();
