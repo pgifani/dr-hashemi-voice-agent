@@ -1,0 +1,12 @@
+# Version control / tooling
+.git
+.claude
+node_modules
+
+# Secrets (must never enter the image) — set them as Coolify environment variables instead
+.env
+.env.*
+!.env.example
+
+# Not needed at runtime
+README.md
