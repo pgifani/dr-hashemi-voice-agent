@@ -6,7 +6,7 @@ import { numberNote, validCodeMelli } from "./numbers.mjs";
 
 const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
 
-export const GREETING = "سلام، مطب دکتر هاشمی؛ من دستیار نوبت‌دهی هستم. بفرمایید؟";
+export const GREETING = "سلام، وقتتون بخیر. مطب دکتر فروغ هاشمی، متخصص کودکان. چطور می‌تونم کمکتون کنم؟";
 
 // Keep in sync with CLINIC_INFO in website/server.mjs.
 const CLINIC_INFO = `Dr. Foroogh Hashemi is a pediatrician caring for newborns through age 18.
