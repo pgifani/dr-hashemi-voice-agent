@@ -137,7 +137,7 @@
   })();
 
   let sid = null, stream = null, ctx = null, analyser = null, recorder = null, timer = null;
-  let state = 'idle', mime = '', textMode = false;
+  let state = 'idle', mime = '', textMode = false, slow = false;   // slow: caller is giving a long number
 
   function setState(s, status, hint = '') {
     state = s; document.body.dataset.state = s;
@@ -232,7 +232,7 @@
       elapsed += 50;
       if (rms > thr) { voiced += 50; silent = 0; if (voiced >= 150) spoken = true; }
       else { voiced = 0; if (spoken) silent += 50; else floor = floor * 0.95 + rms * 0.05; }
-      const done = spoken && (silent >= 1000 || elapsed >= 25000);
+      const done = spoken && (silent >= (slow ? 2000 : 1000) || elapsed >= 25000);
       const idleTooLong = !spoken && elapsed >= 15000;   // restart so the clip stays small
       if (done || idleTooLong) { clearInterval(timer); recorder.stop(); }
     }, 50);
@@ -262,6 +262,7 @@
     if (r.transcript && !isText) addMsg('caller', r.transcript);
     await say(r.reply, r.audio);
     if (r.end) return hangup('تماس به پایان رسید. روز خوبی داشته باشید.');
+    slow = !!r.slow;
     next();
   }
 

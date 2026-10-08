@@ -2,6 +2,8 @@
 // Bookings go to the clinic website's existing API, so phone/voice bookings flow through the
 // same pipeline as web bookings (SMS.ir to the patient, Confirm/Decline to staff on Telegram/Bale).
 
+import { numberNote, validCodeMelli } from "./numbers.mjs";
+
 const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
 
 export const GREETING = "سلام، وقتتون بخیر. مطب دکتر فروغ هاشمی، متخصص کودکان. من دستیار نوبت‌دهی هستم؛ چطور می‌تونم کمکتون کنم؟";
@@ -21,8 +23,13 @@ ${CLINIC_INFO}
 How this conversation works:
 - The caller's words reach you through speech recognition, so expect transcription errors (especially in names and numbers). If something is unclear or doesn't make sense, ask them to repeat it rather than guessing.
 - Everything you write is converted to speech. Reply in natural, polite, spoken colloquial Persian (e.g. «می‌تونم»، «بفرمایید»، «حتماً»). Keep each reply to one or two short sentences, with one question at a time.
-- Never use digits, lists, markdown, emoji or English words in replies; write numbers as Persian words. Times: «ساعت دوازده و ربع»، «ساعت یک و نیم بعدازظهر». Dates: «شنبه هجدهم مهر». When reading back a national ID or mobile number, read it digit by digit in words, in small groups.
+- Never use digits, lists, markdown, emoji or English words in replies; write numbers as Persian words. Times: «ساعت دوازده و ربع»، «ساعت یک و نیم بعدازظهر». Dates: «شنبه هجدهم مهر».
 - Latency-sensitive: begin your visible answer immediately.
+
+Long numbers (national ID, mobile):
+- Iranians say long numbers in groups, not digit by digit: «صفر نهصد و دوازده، سیصد و چهل و پنج، شصت و هفت، هشتاد و نه» is 09123456789. That's normal; never ask them to say digits one at a time.
+- When the caller's turn contains a long number, a [Number parser] note follows their words with the exact digits, a check (complete mobile, valid national-ID checksum, or incomplete) and a ready-made read-back. Trust the note over your own reading of the words, and read the number back using its «read back as» text word for word, then ask if it's correct.
+- If the note says the number is incomplete, the caller probably paused mid-number: ask for the rest and join the parts in order. If it fails the national-ID checksum, say it doesn't seem right and ask them to say it again. If there's no note but they clearly tried to give the number, ask them to repeat it.
 
 Booking an in-person appointment:
 1. Ask which day or time suits them, then call get_open_slots. Offer at most two or three concrete options; never offer a time that isn't in the tool result. If nothing fits, offer the nearest free times.
@@ -71,12 +78,6 @@ const TOOLS = [
 
 const toAscii = (s) => String(s).replace(/[۰-۹]/g, (d) => "۰۱۲۳۴۵۶۷۸۹".indexOf(d)).replace(/[٠-٩]/g, (d) => "٠١٢٣٤٥٦٧٨٩".indexOf(d)).replace(/\D/g, "");
 const toFa = (s) => String(s).replace(/\d/g, (d) => "۰۱۲۳۴۵۶۷۸۹"[d]);
-function validCodeMelli(v) {   // same checksum as website/server.mjs
-  if (!/^\d{10}$/.test(v) || /^(\d)\1{9}$/.test(v)) return false;
-  let s = 0; for (let i = 0; i < 9; i++) s += (+v[i]) * (10 - i);
-  const r = s % 11, c = +v[9];
-  return r < 2 ? c === r : c === 11 - r;
-}
 function normalizeMobile(s) {
   let d = toAscii(s);
   if (d.startsWith("0098")) d = "0" + d.slice(4);
@@ -146,7 +147,7 @@ export function createAgent(env, booking) {
       if (input.caller_confirmed !== true) return { ok: false, error: "Read the summary back and get the caller's explicit yes first." };
       if (session.booked >= MAX_BOOKINGS) return { ok: false, error: "Booking limit for one call reached. Ask them to call again or use the website." };
       const nationalId = toAscii(input.national_id);
-      if (!validCodeMelli(nationalId)) return { ok: false, error: "That national ID fails the checksum. Ask the caller to say it again slowly, digit by digit." };
+      if (!validCodeMelli(nationalId)) return { ok: false, error: "That national ID fails the checksum. Ask the caller to say it again." };
       const mobile = normalizeMobile(input.mobile);
       if (!mobile) return { ok: false, error: "The mobile number must be 11 digits starting with 09. Ask again." };
       const name = String(input.patient_name || "").trim().slice(0, 80);
@@ -171,14 +172,15 @@ export function createAgent(env, booking) {
   async function respond(session, userText) {
     if (!key) return "دستیار هوشمند هنوز راه‌اندازی نشده. لطفاً با شماره‌ی مطب تماس بگیرید.";
     const start = session.messages.length;
-    let content = userText;
+    const note = numberNote(userText);   // exact digits for any long number the caller said
+    let content = note ? `${userText}\n\n${note}` : userText;
     if (start === 0) {   // date context once, at the top of the conversation (keeps the system prompt cacheable)
       let ctx = "";
       try {
         const s = await booking.slots(); session.slots = s;
         ctx = `today in Tehran is ${s.days[0].label} (${s.days[0].date}), time ${s.now.slice(11)}`;
       } catch { ctx = `today is ${new Date().toISOString().slice(0, 10)} (UTC)`; }
-      content = `[Context, not spoken by the caller: you already greeted them with «${GREETING}». ${ctx}.]\n\n${userText}`;
+      content = `[Context, not spoken by the caller: you already greeted them with «${GREETING}». ${ctx}.]\n\n${content}`;
     }
     session.messages.push({ role: "user", content });
     const spoken = [];   // text from every step of this turn ("one moment…" before a tool + the answer after it)

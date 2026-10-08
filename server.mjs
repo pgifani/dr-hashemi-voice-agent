@@ -127,7 +127,10 @@ async function handleTurn(req, res) {
     const audio = await speak(reply);
     t.push(Date.now());
     const timing = { hear: (t[1] - t[0]) / 1000, think: (t[2] - t[1]) / 1000, speak: (t[3] - t[2]) / 1000 };
-    json(res, 200, { ok: true, transcript, reply, audio, end: s.ended, booked: s.booked, timing });
+    // Asking for a national ID / mobile (not reading one back)? Callers pause between digit groups, so the page
+    // waits for a longer silence before ending their turn.
+    const slow = /کد ملی|شماره|موبایل/.test(reply) && !/درسته|صحیحه/.test(reply);
+    json(res, 200, { ok: true, transcript, reply, audio, end: s.ended, booked: s.booked, timing, slow });
   } catch (e) {
     console.error("turn failed:", e.message);
     const reply = "ببخشید، یه مشکل فنی پیش اومد. لطفاً دوباره بفرمایید، یا با شماره‌ی مطب تماس بگیرید.";
