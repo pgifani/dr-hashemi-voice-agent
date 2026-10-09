@@ -18,12 +18,14 @@ export function createSpeech(env) {
   const ttsFormat = (env.TTS_FORMAT || "mp3_44100_64").trim();
 
   // Returns the transcript text ("" when nothing intelligible was said).
-  async function transcribe(audio, mime) {
+  // keyterms: words the recognizer should expect (clinic names, places, services).
+  async function transcribe(audio, mime, keyterms = []) {
     if (!key) throw new Error("ELEVENLABS_API_KEY not set");
     const form = new FormData();
     form.append("model_id", sttModel);
     if (sttLang) form.append("language_code", sttLang);
     form.append("tag_audio_events", "false");
+    for (const k of keyterms.slice(0, 100)) form.append("keyterms", k);   // one field per term
     const ext = /mp4|aac|m4a/.test(mime) ? "m4a" : /ogg/.test(mime) ? "ogg" : /wav/.test(mime) ? "wav" : "webm";
     form.append("file", new Blob([audio], { type: mime || "audio/webm" }), `turn.${ext}`);
     const r = await fetch(`${EL_BASE}/speech-to-text`, { method: "POST", headers: { "xi-api-key": key }, body: form });

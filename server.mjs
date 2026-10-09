@@ -71,7 +71,19 @@ function readBody(req, limit) {
   });
 }
 // Light cleanup so TTS doesn't read symbols aloud.
-const speakable = (t) => String(t).replace(/[*_#`>|~]/g, "").replace(/\p{Extended_Pictographic}/gu, "").replace(/\s+/g, " ").trim();
+const speakableBase = (t) => String(t).replace(/[*_#`>|~]/g, "").replace(/\p{Extended_Pictographic}/gu, "").replace(/\s+/g, " ").trim();
+// Pronunciation fixes taught by staff (/say هاشمی = هاشِمی), applied to whole words just before speech.
+let sayRules = [];
+const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const speakable = (t) => sayRules.reduce((out, { word, as }) =>
+  out.replace(new RegExp(`(^|[^\\p{L}\\p{M}])${escapeRe(word)}(?=$|[^\\p{L}\\p{M}])`, "gu"), `$1${as}`), speakableBase(t));
+// Words the recognizer should expect: the clinic's own names plus every word staff taught a pronunciation for.
+const BASE_TERMS = ["هاشمی", "فروغ", "گوهردشت", "کرج", "کد ملی", "نوبت"];
+async function refreshKnowledge() {
+  const k = await booking.knowledge();
+  sayRules = (k.say || []).filter((r) => r.word && r.as);
+  return [...new Set([...BASE_TERMS, ...sayRules.map((r) => r.word)])];
+}
 
 async function speak(text) {
   try { const mp3 = await speech.synthesize(speakable(text)); return mp3 ? mp3.toString("base64") : null; }
@@ -153,10 +165,11 @@ async function handleTurn(req, res) {
     } else {
       if (!speech.sttOn) return json(res, 503, { ok: false, error: "speech-to-text not configured" });
       if (body.length < 1500) transcript = "";   // too short to contain speech
-      else transcript = await speech.transcribe(body, type);
+      else transcript = await speech.transcribe(body, type, await refreshKnowledge());
     }
     t.push(Date.now());
     if (!transcript) return json(res, 200, { ok: true, transcript: "", reply: NOT_HEARD, audio: await cachedSpeak(NOT_HEARD) });
+    if (type === "application/json") await refreshKnowledge();   // typed test turns get the same pronunciation rules
     const reply = await agent.respond(s, transcript);
     t.push(Date.now());
     const audioUrl = startTts(reply);   // synthesis runs in the background; the page streams it from this URL

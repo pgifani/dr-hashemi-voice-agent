@@ -89,8 +89,18 @@ function normalizeMobile(s) {
 /* ---------- client for the clinic website's booking API ---------- */
 export function createBooking(base) {
   base = base.replace(/\/$/, "");
+  // Staff-taught knowledge (facts + pronunciation fixes) from the website's bot; cached for a minute.
+  let kCache = { at: 0, data: { facts: [], say: [] } };
   return {
     base,
+    async knowledge() {
+      if (Date.now() - kCache.at < 60000) return kCache.data;
+      try {
+        const r = await fetch(`${base}/api/knowledge`, { signal: AbortSignal.timeout(5000) });
+        if (r.ok) { const d = await r.json(); kCache = { at: Date.now(), data: { facts: d.facts || [], say: d.say || [] } }; }
+      } catch {}
+      return kCache.data;   // last good copy if the website is unreachable
+    },
     async slots() {
       const r = await fetch(`${base}/api/slots`, { signal: AbortSignal.timeout(8000) });
       if (!r.ok) throw new Error(`slots ${r.status}`);
@@ -118,7 +128,11 @@ export function createAgent(env, booking) {
   const modern = !/haiku-4/.test(model);
   // Optional thinking mode, e.g. VOICE_THINKING=between_tools on Sonnet 5.5 (thinking off; effort high or below).
   const thinking = (env.VOICE_THINKING || "").trim();
-  async function callClaude(messages) {
+  // Facts taught by staff via the bot, fixed per call (so the cached prompt prefix stays stable within a call).
+  const systemFor = (session) => session.facts?.length
+    ? `${SYSTEM}\n\nClinic staff notes (taught by the clinic team; they override the general info above if they conflict):\n${session.facts.map((f) => "- " + f).join("\n")}`
+    : SYSTEM;
+  async function callClaude(messages, session) {
     const r = await fetch(ANTHROPIC_URL, {
       method: "POST",
       headers: {
@@ -126,7 +140,7 @@ export function createAgent(env, booking) {
         ...(modern ? { "anthropic-beta": "server-side-fallback-2026-07-01" } : {}),   // re-runs a policy decline on Anthropic's fallback model
       },
       body: JSON.stringify({
-        model, max_tokens: 4000, system: SYSTEM, tools: TOOLS, messages, cache_control: { type: "ephemeral" },
+        model, max_tokens: 4000, system: systemFor(session), tools: TOOLS, messages, cache_control: { type: "ephemeral" },
         ...(modern ? { output_config: { effort }, fallbacks: "default" } : {}),
         ...(thinking ? { thinking: { type: thinking } } : {}),
       }),
@@ -177,6 +191,7 @@ export function createAgent(env, booking) {
     if (start === 0) {   // date context once, at the top of the conversation (keeps the system prompt cacheable)
       let ctx = "";
       try {
+        session.facts = (await booking.knowledge()).facts;
         const s = await booking.slots(); session.slots = s;
         ctx = `today in Tehran is ${s.days[0].label} (${s.days[0].date}), time ${s.now.slice(11)}`;
       } catch { ctx = `today is ${new Date().toISOString().slice(0, 10)} (UTC)`; }
@@ -186,7 +201,7 @@ export function createAgent(env, booking) {
     const spoken = [];   // text from every step of this turn ("one moment…" before a tool + the answer after it)
     try {
       for (let i = 0; i < 6; i++) {
-        const data = await callClaude(session.messages);
+        const data = await callClaude(session.messages, session);
         if (data.stop_reason === "refusal") { session.messages.length = start; return "ببخشید، در این مورد نمی‌تونم کمکی کنم. برای نوبت یا سؤال درباره‌ی مطب در خدمتم."; }
         session.messages.push({ role: "assistant", content: data.content });   // keep blocks unchanged (thinking etc.)
         const text = data.content.filter((b) => b.type === "text").map((b) => b.text).join(" ").trim();
