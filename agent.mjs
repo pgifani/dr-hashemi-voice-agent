@@ -10,7 +10,7 @@ export const GREETING = "سلام، وقتتون بخیر. مطب دکتر فر�
 
 // Keep in sync with CLINIC_INFO in website/server.mjs.
 const CLINIC_INFO = `Dr. Foroogh Hashemi is a pediatrician caring for newborns through age 18.
-Working hours: Saturday, Monday and Wednesday 12:00–16:00; Sunday 12:00–15:00; Tuesday, Thursday and Friday closed. Appointments are every 15 minutes and can be booked up to one week ahead.
+{{HOURS}} Appointments are every 15 minutes and can be booked up to one week ahead.
 Clinic address: Karaj, North Azadi St (Gohardasht), between 7th and 8th West St, opposite Gohardasht Pharmacy, No. 223, first floor.
 Clinic phone: 026-34456153.
 Online visits (over WhatsApp, prepaid by card-to-card) can only be booked on the clinic website, not by phone.
@@ -97,7 +97,7 @@ export function createBooking(base) {
       if (Date.now() - kCache.at < 60000) return kCache.data;
       try {
         const r = await fetch(`${base}/api/knowledge`, { signal: AbortSignal.timeout(5000) });
-        if (r.ok) { const d = await r.json(); kCache = { at: Date.now(), data: { facts: d.facts || [], say: d.say || [] } }; }
+        if (r.ok) { const d = await r.json(); kCache = { at: Date.now(), data: { facts: d.facts || [], say: d.say || [], hours: d.hours || "" } }; }
       } catch {}
       return kCache.data;   // last good copy if the website is unreachable
     },
@@ -129,9 +129,14 @@ export function createAgent(env, booking) {
   // Optional thinking mode, e.g. VOICE_THINKING=between_tools on Sonnet 5.5 (thinking off; effort high or below).
   const thinking = (env.VOICE_THINKING || "").trim();
   // Facts taught by staff via the bot, fixed per call (so the cached prompt prefix stays stable within a call).
-  const systemFor = (session) => session.facts?.length
-    ? `${SYSTEM}\n\nClinic staff notes (taught by the clinic team; they override the general info above if they conflict):\n${session.facts.map((f) => "- " + f).join("\n")}`
-    : SYSTEM;
+  // Working hours come from the clinic's editable schedule (staff change them through the bot).
+  const DEFAULT_HOURS = "Working hours: Saturday, Monday and Wednesday 12:00–16:00; Sunday 12:00–15:00; Tuesday, Thursday and Friday closed.";
+  const systemFor = (session) => {
+    const base = SYSTEM.replace("{{HOURS}}", session.hours || DEFAULT_HOURS);
+    return session.facts?.length
+      ? `${base}\n\nClinic staff notes (taught by the clinic team; they override the general info above if they conflict):\n${session.facts.map((f) => "- " + f).join("\n")}`
+      : base;
+  };
   async function callClaude(messages, session) {
     const r = await fetch(ANTHROPIC_URL, {
       method: "POST",
@@ -191,7 +196,8 @@ export function createAgent(env, booking) {
     if (start === 0) {   // date context once, at the top of the conversation (keeps the system prompt cacheable)
       let ctx = "";
       try {
-        session.facts = (await booking.knowledge()).facts;
+        const k = await booking.knowledge();
+        session.facts = k.facts; session.hours = k.hours;
         const s = await booking.slots(); session.slots = s;
         ctx = `today in Tehran is ${s.days[0].label} (${s.days[0].date}), time ${s.now.slice(11)}`;
       } catch { ctx = `today is ${new Date().toISOString().slice(0, 10)} (UTC)`; }
