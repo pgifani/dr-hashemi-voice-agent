@@ -12,7 +12,8 @@ export const GREETING = "سلام، وقتتون بخیر. مطب دکتر فر�
 const CLINIC_INFO = `Dr. Foroogh Hashemi is a pediatrician caring for newborns through age 18.
 {{HOURS}} Appointments are every 15 minutes and can be booked up to one week ahead.
 Clinic address: Karaj, North Azadi St (Gohardasht), between 7th and 8th West St, opposite Gohardasht Pharmacy, No. 223, first floor.
-Clinic phone: 026-34456153.
+{{CONTACT}}
+{{FEES}}
 Online visits (over WhatsApp, prepaid by card-to-card) can only be booked on the clinic website, not by phone.
 Services: newborn care and jaundice; breastfeeding and nutrition counseling; growth and development monitoring to age 18; infectious and digestive issues (diarrhea, constipation, abdominal pain, colic, reflux); kidney and urinary (infections, stones, bedwetting); asthma and allergies; respiratory and ear infections; periodic exams; puberty, height-growth and obesity care; ear piercing (Studex system, from 2 months of age).`;
 
@@ -97,7 +98,10 @@ export function createBooking(base) {
       if (Date.now() - kCache.at < 60000) return kCache.data;
       try {
         const r = await fetch(`${base}/api/knowledge`, { signal: AbortSignal.timeout(5000) });
-        if (r.ok) { const d = await r.json(); kCache = { at: Date.now(), data: { facts: d.facts || [], say: d.say || [], hours: d.hours || "" } }; }
+        if (r.ok) {
+          const d = await r.json();
+          kCache = { at: Date.now(), data: { facts: d.facts || [], say: d.say || [], hours: d.hours || "", contact: d.contact || "", fees: d.fees || "", notice: d.notice || "" } };
+        }
       } catch {}
       return kCache.data;   // last good copy if the website is unreachable
     },
@@ -132,7 +136,10 @@ export function createAgent(env, booking) {
   // Working hours come from the clinic's editable schedule (staff change them through the bot).
   const DEFAULT_HOURS = "Working hours: Saturday, Monday and Wednesday 12:00–16:00; Sunday 12:00–15:00; Tuesday, Thursday and Friday closed.";
   const systemFor = (session) => {
-    const base = SYSTEM.replace("{{HOURS}}", session.hours || DEFAULT_HOURS);
+    // Hours, contact numbers, prices and the clinic announcement are all editable by staff through the bot.
+    const base = SYSTEM.replace("{{HOURS}}", session.hours || DEFAULT_HOURS)
+      .replace("{{CONTACT}}", session.contact || "Clinic phone: 026-34456153.")
+      .replace("{{FEES}}", [session.fees, session.notice].filter(Boolean).join("\n")).replace(/\n{3,}/g, "\n\n");
     return session.facts?.length
       ? `${base}\n\nClinic staff notes (taught by the clinic team; they override the general info above if they conflict):\n${session.facts.map((f) => "- " + f).join("\n")}`
       : base;
@@ -197,7 +204,7 @@ export function createAgent(env, booking) {
       let ctx = "";
       try {
         const k = await booking.knowledge();
-        session.facts = k.facts; session.hours = k.hours;
+        session.facts = k.facts; session.hours = k.hours; session.contact = k.contact; session.fees = k.fees; session.notice = k.notice;
         const s = await booking.slots(); session.slots = s;
         ctx = `today in Tehran is ${s.days[0].label} (${s.days[0].date}), time ${s.now.slice(11)}`;
       } catch { ctx = `today is ${new Date().toISOString().slice(0, 10)} (UTC)`; }
