@@ -1,42 +1,71 @@
-# Voice agent: Persian phone receptionist for Dr. Hashemi's clinic
+# Voice agent: Persian voice receptionist for a clinic (Ainoor)
 
-Prototype, phase 1: a web "call" page. The caller talks in Persian, and the agent finds a free time, collects name, national ID and mobile **by voice** (with read-back), and books through the clinic website's existing API. A voice booking therefore gets the same SMS.ir texts and Telegram/Bale Confirm/Decline as a web booking. Staff messages are tagged `📞 Voice agent (Persian)`.
+A web "call" page: a parent taps the button and talks in **Persian**; the agent offers free times, collects the
+child's name, national ID and mobile **by voice** (with natural grouped read-back), and books through the clinic
+site's API. Voice bookings get the same SMS.ir texts and Telegram/Bale ✅/❌ as web bookings (tagged `📞 Voice agent`).
+First instance: `https://voice.ainoor.io` for Dr. Hashemi (clinic site `https://demo.ainoor.io`).
+
+> Agency playbook for setting this up for a new clinic: skill **`clinic-voice-agent`** in the `ainoor` repo
+> (`.claude/skills/clinic-voice-agent/SKILL.md`).
 
 ```
-browser mic ─(one utterance per POST)─▶ voice-agent (this service, Node, zero deps)
-                                         ├─ STT  ElevenLabs Scribe v2 (fa)
-                                         ├─ brain Claude + tools: get_open_slots, book_appointment, end_call
-                                         └─ TTS  ElevenLabs Eleven v3 (Persian)  ─▶ MP3 back to the browser
-                                              │
-                                              ▼ server-to-server
-                              website/server.mjs  GET /api/slots · POST /api/book (strict)
+browser mic ─(one utterance per POST /api/turn)─▶ voice agent (this service, Node 22, zero deps)
+                                                   ├─ STT   ElevenLabs Scribe v2, language fas, key terms
+                                                   ├─ numbers.mjs  spoken Persian numbers → exact digits + read-back
+                                                   ├─ brain Claude Sonnet 5.5 + tools: get_open_slots, book_appointment, end_call
+                                                   └─ TTS   ElevenLabs Eleven v4 turbo, streamed via GET /api/tts/<id>
+                                                        │ server-to-server
+                                                        ▼
+                              clinic site  GET /api/slots · POST /api/book (strict) · GET /api/knowledge
 ```
 
-The browser only ever talks to this service. ElevenLabs blocks Iranian IPs, so every AI call is made server-side.
+The browser only ever talks to this service — ElevenLabs/Anthropic block Iranian IPs, so every AI call is server-side.
+
+## Files
+| File | What |
+|---|---|
+| `server.mjs` | HTTP: `POST /api/start` (session + cached greeting), `POST /api/turn?sid=` (audio or JSON `{text}`), `GET /api/tts/<id>` (streamed reply audio), `POST /api/end`, `/healthz`; sessions, rate limits, `ACCESS_CODE` gate, pronunciation fixes + STT key terms |
+| `agent.mjs` | Claude tool loop, system prompt (`GREETING`, `CLINIC_INFO` with `{{HOURS}}/{{CONTACT}}/{{FEES}}` filled from the site), booking client (`/api/slots`, `/api/book`, `/api/knowledge` cached 60 s) |
+| `numbers.mjs` | Persian number words → digits («و» joins inside a group), checksum / mobile checks, grouped read-back |
+| `speech.mjs` | ElevenLabs STT/TTS adapter (swap in an Iranian provider here only) |
+| `public/index.html` | the call page (RTL, voice-activity detection, streamed playback, typed fallback with `?debug=1`) |
+
+## What comes from the clinic site (changes made by staff in the bot appear on the next call)
+Working hours, clinic phone/WhatsApp, visit prices, the announcement, staff-taught facts and `/say` pronunciations
+(`GET /api/knowledge`), and free slots (`GET /api/slots`). Only the doctor's identity, address, services and the
+greeting are written in this repo (`agent.mjs`, `server.mjs` `BASE_TERMS`, `public/index.html`).
 
 ## Run locally
+1. Clinic site: `cd ../website && node server.mjs` (mock mode without bot/SMS keys; use a scratch `DATA_DIR`).
+2. `cp .env.example .env`, fill `ANTHROPIC_API_KEY`, `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID`; set `BOOKING_API_BASE=http://localhost:3000`.
+3. `node server.mjs` → http://localhost:3100 (mic works on localhost; production needs HTTPS). `?debug=1` = typed chat.
+Test Persian text with a Node script, not Git-Bash `curl` (it sends `???`).
 
-1. Start the website backend: `cd ../website && node server.mjs` (port 3000). Without bot or SMS keys it runs in mock mode and prints messages instead of sending them.
-2. `cp .env.example .env` and fill in `ANTHROPIC_API_KEY`, `ELEVENLABS_API_KEY` and `ELEVENLABS_VOICE_ID`. Pick a voice that sounds natural in Persian from the ElevenLabs Voice Library.
-3. `node server.mjs`, then open http://localhost:3100 (microphone access works on localhost; production needs HTTPS).
+## Env vars
+| Var | Default / notes |
+|---|---|
+| `ANTHROPIC_API_KEY` | required for the brain |
+| `VOICE_MODEL` | `claude-sonnet-5-5` (tested: ~2 s/reply; Opus 5.5 2–12 s; Haiku 4.5 weaker Persian) |
+| `VOICE_EFFORT` / `VOICE_THINKING` | `low` / unset |
+| `ELEVENLABS_API_KEY` | key needs **Speech to Text + Text to Speech + Voices (read)** |
+| `ELEVENLABS_VOICE_ID` | library voices need a **paid** plan (free = premade voices only, non-commercial). Persian picks: Roya `ndcUYGFbbd96WXiZVVaQ`, Niloofar, Setareh |
+| `TTS_MODEL` | `eleven_v4_turbo` (v3 also fine; Flash/Turbo v2.5 have no Persian) |
+| `STT_MODEL` / `STT_LANGUAGE` | `scribe_v2` / `fas` |
+| `BOOKING_API_BASE` | clinic site URL (bookings are real) |
+| `ACCESS_CODE` | optional private-link gate: calls only start from `/?k=<code>` |
+| `PORT` | `3100` |
 
-- With no ElevenLabs key the page falls back to a typed chat, which is handy for testing the dialogue.
-- `?debug=1` forces the typed chat even when speech is on.
+## Deploy (Coolify, Hostinger VPS)
+Dockerfile build pack, port **3100**, healthcheck `/healthz`, domain with HTTPS (`voice.<clinic domain>` — the mic
+needs HTTPS). Use the purple **Deploy** for new commits ("Restart" keeps old code).
 
-## Deploy (Coolify on the Hostinger VPS)
-
-- New resource from this folder's repo, **Dockerfile** build pack, port **3100**, healthcheck `/healthz`.
-- Set the env vars from `.env.example` in Coolify. Set `BOOKING_API_BASE` to the clinic site's public URL, or its internal Coolify URL if both run on the same server.
-- Give it a domain with HTTPS (e.g. `voice.<clinic domain>`), because browsers only allow the mic over HTTPS.
-- To put it on the clinic site, link a "تماس صوتی" button to that URL. If you embed it with an iframe, add `allow="microphone"`.
-
-## Notes
-
-- **Turn-based on purpose.** Each turn takes about 2–4 s, and the agent can't be interrupted while it speaks. Phase 2 is a WebSocket stream with barge-in; phase 3 is a real phone line (an Iranian SIP trunk into Asterisk AudioSocket, or an Iranian AI-phone provider calling our tools).
-- **Swappable speech.** STT and TTS live in `speech.mjs`, so an Iranian provider (Nevisa/iotype STT, Avasho TTS) can replace ElevenLabs there.
-- **Privacy.** Transcripts stay in memory only (20-minute session TTL), and logs record tool names only, never patient data. Audio and text do pass through ElevenLabs and Anthropic.
-- **Safeguards.**
-  - Up to 3 bookings per call, 40 turns per call, and per-IP rate limits.
-  - `book_appointment` requires the caller's explicit confirmation and a valid national-ID checksum.
-  - The website rejects taken, blocked or out-of-hours slots with a 409.
-- **Clinic facts.** These are duplicated in `agent.mjs` (`CLINIC_INFO`). Keep them in sync with `website/server.mjs`. Working hours come from the website via `/api/slots`.
+## Behaviour & tuning notes
+- **Turn-based**: end of speech = **1.0 s** silence (2 s right after asking for a number); 0.8 s cut callers off.
+  Typical reply ≈ 3–5 s (hear ~0.5 s, think ~1.5–4 s, first audio ~0.15 s after the text thanks to streaming).
+  Phase 2 = realtime WebSocket with barge-in.
+- **Numbers**: never let the model convert long numbers; `numbers.mjs` gives it exact digits + the read-back text.
+- **Goodbye**: `end_call` ends the turn without another model call.
+- **Safety**: ≤3 bookings per call (siblings), 40 turns, per-IP limits; `book_appointment` needs explicit
+  confirmation + valid national-ID checksum; the site returns 409 for unavailable slots; no medical advice (115 for emergencies).
+- **Privacy**: transcripts in memory only (20 min TTL); logs carry tool names only. Audio/text pass through ElevenLabs and Anthropic.
+- **Phone line (later, Iran)**: Iranian AI-phone provider calling our booking API, or Iranian SIP trunk → Asterisk AudioSocket → this brain.
